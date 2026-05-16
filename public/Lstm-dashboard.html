@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LSTM Real-Time Monitor - Shiftter</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0e27;
+      color: #e0e6ed;
+      padding: 20px;
+      overflow-x: hidden;
+    }
+    .container { max-width: 1600px; margin: 0 auto; }
+    header {
+      text-align: center;
+      margin-bottom: 40px;
+      padding: 30px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4);
+    }
+    h1 { font-size: 2.8em; font-weight: 700; margin-bottom: 10px; }
+    .subtitle { font-size: 1.1em; opacity: 0.9; }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+    .stat-card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 30px;
+    }
+    .stat-label {
+      font-size: 0.95em;
+      color: #a0aec0;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      font-weight: 600;
+    }
+    .stat-value {
+      font-size: 3em;
+      font-weight: 700;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .stat-value.anomaly {
+      background: linear-gradient(135deg, #f56565, #ed8936);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .chart-container {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 30px;
+      margin-bottom: 30px;
+      position: relative;
+    }
+    .chart-title {
+      font-size: 1.4em;
+      font-weight: 600;
+      margin-bottom: 20px;
+      color: #e0e6ed;
+    }
+    .status-indicator {
+      position: absolute;
+      top: 30px;
+      right: 30px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(0,0,0,0.4);
+      padding: 12px 24px;
+      border-radius: 25px;
+      font-weight: 600;
+      z-index: 10;
+    }
+    .status-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #48bb78;
+      animation: pulse 2s infinite;
+      box-shadow: 0 0 10px #48bb78;
+    }
+    .status-dot.disconnected {
+      background: #f56565;
+      box-shadow: 0 0 10px #f56565;
+      animation: none;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(1.1); }
+    }
+    .anomaly-log {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 30px;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+    .anomaly-log h3 { font-size: 1.4em; margin-bottom: 20px; }
+    .anomaly-item {
+      background: rgba(245,101,101,0.12);
+      border-left: 5px solid #f56565;
+      padding: 20px;
+      margin-bottom: 15px;
+      border-radius: 8px;
+    }
+    .anomaly-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .anomaly-time { font-size: 0.9em; color: #a0aec0; }
+    .anomaly-device {
+      font-size: 0.85em;
+      background: rgba(102,126,234,0.3);
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-weight: 600;
+    }
+    .anomaly-score { font-weight: 700; color: #f56565; font-size: 1.2em; }
+    .anomaly-details {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      font-size: 0.9em;
+      color: #cbd5e0;
+    }
+    .controls { display: flex; gap: 15px; margin-bottom: 30px; flex-wrap: wrap; }
+    .btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95em;
+    }
+    .btn-primary { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+    .btn-danger { background: linear-gradient(135deg, #f56565, #ed8936); color: white; }
+    .empty-state { text-align: center; padding: 60px 20px; color: #a0aec0; }
+    .empty-state-icon { font-size: 4em; margin-bottom: 20px; opacity: 0.5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🧠 LSTM Anomaly Detection</h1>
+      <p class="subtitle">Surveillance en temps réel des vibrations Shiftter</p>
+    </header>
+
+    <div class="controls">
+      <button class="btn btn-primary" onclick="exportCSV()">📥 Exporter CSV</button>
+      <button class="btn btn-danger" onclick="resetMetrics()">🔄 Réinitialiser</button>
+      <button class="btn btn-primary" onclick="loadMetrics()">🔃 Actualiser</button>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Prédictions Totales</div>
+        <div class="stat-value" id="totalPredictions">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Anomalies Détectées</div>
+        <div class="stat-value anomaly" id="anomalyCount">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Taux d'Anomalie</div>
+        <div class="stat-value" id="anomalyRate">0%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Latence Moyenne</div>
+        <div class="stat-value" id="avgLatency">0ms</div>
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <div class="status-indicator">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Connexion...</span>
+      </div>
+      <h3 class="chart-title">📈 Score LSTM en Temps Réel</h3>
+      <div style="position: relative; width: 100%; height: 350px;">
+        <canvas id="scoreChart"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <h3 class="chart-title">📊 Magnitude des Vibrations (Dernière Séquence)</h3>
+      <div style="position: relative; width: 100%; height: 280px;">
+        <canvas id="sequenceChart"></canvas>
+      </div>
+    </div>
+
+    <div class="anomaly-log">
+      <h3>🚨 Journal des Anomalies</h3>
+      <div id="anomalyLog">
+        <div class="empty-state">
+          <div class="empty-state-icon">🔍</div>
+          <p>Aucune anomalie détectée pour le moment</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Socket.io ──────────────────────────────────────────────────────
+    const socket = io({ transports: ['websocket', 'polling'] });
+
+    // ── Charts ─────────────────────────────────────────────────────────
+    const scoreChart = new Chart(document.getElementById('scoreChart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Score LSTM',
+            data: [],
+            borderColor: '#667eea',
+            backgroundColor: 'rgba(102, 126, 234, 0.15)',
+            borderWidth: 3,
+            tension: 0.4,
+            fill: true,
+            pointRadius: 4,
+            pointHoverRadius: 6
+          },
+          {
+            label: "Seuil d'Anomalie",
+            data: [],
+            borderColor: '#f56565',
+            borderWidth: 2,
+            borderDash: [10, 5],
+            pointRadius: 0,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: '#e0e6ed', font: { size: 14 } } },
+          tooltip: { backgroundColor: 'rgba(0,0,0,0.8)', padding: 12 }
+        },
+        scales: {
+          x: { ticks: { color: '#a0aec0' }, grid: { color: 'rgba(255,255,255,0.08)' } },
+          y: { ticks: { color: '#a0aec0' }, grid: { color: 'rgba(255,255,255,0.08)' }, beginAtZero: true, max: 1 }
+        },
+        animation: { duration: 300 }
+      }
+    });
+
+    const sequenceChart = new Chart(document.getElementById('sequenceChart'), {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Magnitude des Vibrations (g)',
+            data: [],
+            borderColor: '#48bb78',
+            backgroundColor: 'rgba(72, 187, 120, 0.15)',
+            borderWidth: 3,
+            tension: 0.4,
+            fill: true,
+            pointRadius: 3,
+            pointHoverRadius: 5
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: '#e0e6ed', font: { size: 14 } } },
+          tooltip: { backgroundColor: 'rgba(0,0,0,0.8)', padding: 12 }
+        },
+        scales: {
+          x: { ticks: { color: '#a0aec0' }, grid: { color: 'rgba(255,255,255,0.08)' } },
+          y: { ticks: { color: '#a0aec0' }, grid: { color: 'rgba(255,255,255,0.08)' } }
+        },
+        animation: { duration: 300 }
+      }
+    });
+
+    // ── État ───────────────────────────────────────────────────────────
+    let totalPredictions = 0;
+    let anomalyCount = 0;
+    let latencies = [];
+
+    // ── Charger métriques initiales ────────────────────────────────────
+    async function loadMetrics() {
+      try {
+        const response = await fetch('/api/sensors/lstm/metrics');
+        const result = await response.json();
+
+        if (result.success) {
+          const data = result.data;
+          totalPredictions = data.totalPredictions;
+          anomalyCount = data.anomalyCount;
+
+          document.getElementById('totalPredictions').textContent = totalPredictions;
+          document.getElementById('anomalyCount').textContent = anomalyCount;
+          document.getElementById('anomalyRate').textContent = data.anomalyRate + '%';
+          document.getElementById('avgLatency').textContent = data.avgLatency + 'ms';
+
+          // Pré-remplir les charts avec l'historique
+          if (data.recentPredictions && data.recentPredictions.length > 0) {
+            data.recentPredictions.forEach(p => {
+              const t = new Date(p.timestamp).toLocaleTimeString();
+              scoreChart.data.labels.push(t);
+              scoreChart.data.datasets[0].data.push(p.score);
+              scoreChart.data.datasets[1].data.push(p.threshold);
+            });
+            scoreChart.update();
+
+            const last = data.recentPredictions[data.recentPredictions.length - 1];
+            if (last.sequence && last.sequence.length > 0) {
+              sequenceChart.data.labels = last.sequence.map((_, i) => 'T-' + (last.sequence.length - i));
+              sequenceChart.data.datasets[0].data = last.sequence;
+              sequenceChart.update();
+            }
+          }
+
+          console.log('✅ Métriques chargées:', data);
+        }
+      } catch (error) {
+        console.error('❌ Erreur chargement métriques:', error);
+      }
+    }
+
+    // ── Écoute temps réel ──────────────────────────────────────────────
+    socket.on('lstm:prediction', (data) => {
+      console.log('📊 Nouvelle prédiction:', data);
+
+      totalPredictions++;
+      if (data.isAnomaly) anomalyCount++;
+      latencies.push(data.latency);
+      if (latencies.length > 100) latencies.shift();
+
+      document.getElementById('totalPredictions').textContent = totalPredictions;
+      document.getElementById('anomalyCount').textContent = anomalyCount;
+      document.getElementById('anomalyRate').textContent =
+        totalPredictions > 0 ? ((anomalyCount / totalPredictions) * 100).toFixed(2) + '%' : '0%';
+      document.getElementById('avgLatency').textContent =
+        latencies.length > 0 ? (latencies.reduce((a, b) => a + b, 0) / latencies.length).toFixed(0) + 'ms' : '0ms';
+
+      const time = new Date(data.timestamp).toLocaleTimeString();
+      scoreChart.data.labels.push(time);
+      scoreChart.data.datasets[0].data.push(data.score);
+      scoreChart.data.datasets[1].data.push(data.threshold);
+
+      if (scoreChart.data.labels.length > 50) {
+        scoreChart.data.labels.shift();
+        scoreChart.data.datasets[0].data.shift();
+        scoreChart.data.datasets[1].data.shift();
+      }
+      scoreChart.update();
+
+      if (data.sequence && data.sequence.length > 0) {
+        sequenceChart.data.labels = data.sequence.map((_, i) => 'T-' + (data.sequence.length - i));
+        sequenceChart.data.datasets[0].data = data.sequence;
+        sequenceChart.update();
+      }
+
+      if (data.isAnomaly) {
+        const logDiv = document.getElementById('anomalyLog');
+        const emptyState = logDiv.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+
+        const anomalyItem = document.createElement('div');
+        anomalyItem.className = 'anomaly-item';
+        anomalyItem.innerHTML =
+          '<div class="anomaly-header">' +
+            '<div class="anomaly-time">' + new Date(data.timestamp).toLocaleString('fr-FR') + '</div>' +
+            '<div class="anomaly-device">📡 ' + data.deviceId + '</div>' +
+          '</div>' +
+          '<div class="anomaly-score">⚠️ Score: ' + data.score.toFixed(4) + ' (Seuil: ' + data.threshold + ')</div>' +
+          '<div class="anomaly-details">' +
+            '🌡️ Température: ' + (data.rawData && data.rawData.temperature ? data.rawData.temperature.toFixed(1) : 'N/A') + '°C | ' +
+            '💧 Humidité: ' + (data.rawData && data.rawData.humidity ? data.rawData.humidity.toFixed(1) : 'N/A') + '% | ' +
+            '⏱️ Latence: ' + data.latency + 'ms' +
+          '</div>';
+
+        logDiv.insertBefore(anomalyItem, logDiv.firstChild);
+        while (logDiv.children.length > 20) logDiv.removeChild(logDiv.lastChild);
+      }
+    });
+
+    // ── Connexion Socket.io ────────────────────────────────────────────
+    socket.on('connect', () => {
+      console.log('✅ Connecté au serveur, ID:', socket.id);
+      document.getElementById('statusDot').classList.remove('disconnected');
+      document.getElementById('statusText').textContent = 'En ligne';
+      loadMetrics();
+    });
+
+    socket.on('disconnect', () => {
+      console.log('❌ Déconnecté du serveur');
+      document.getElementById('statusDot').classList.add('disconnected');
+      document.getElementById('statusText').textContent = 'Hors ligne';
+    });
+
+    // ── Boutons ────────────────────────────────────────────────────────
+    async function exportCSV() {
+      window.open('/api/sensors/lstm/export-csv', '_blank');
+    }
+
+    async function resetMetrics() {
+      if (!confirm('Réinitialiser toutes les métriques ?')) return;
+
+      try {
+        const response = await fetch('/api/sensors/lstm/reset-metrics', { method: 'POST' });
+        const result = await response.json();
+
+        if (result.success) {
+          totalPredictions = 0;
+          anomalyCount = 0;
+          latencies = [];
+
+          document.getElementById('totalPredictions').textContent = '0';
+          document.getElementById('anomalyCount').textContent = '0';
+          document.getElementById('anomalyRate').textContent = '0%';
+          document.getElementById('avgLatency').textContent = '0ms';
+
+          scoreChart.data.labels = [];
+          scoreChart.data.datasets[0].data = [];
+          scoreChart.data.datasets[1].data = [];
+          scoreChart.update();
+
+          sequenceChart.data.labels = [];
+          sequenceChart.data.datasets[0].data = [];
+          sequenceChart.update();
+
+          document.getElementById('anomalyLog').innerHTML =
+            '<div class="empty-state"><div class="empty-state-icon">🔍</div><p>Aucune anomalie détectée pour le moment</p></div>';
+
+          alert('✅ Métriques réinitialisées');
+        }
+      } catch (error) {
+        console.error('❌ Erreur reset:', error);
+        alert('Erreur lors de la réinitialisation');
+      }
+    }
+  </script>
+</body>
+</html>
